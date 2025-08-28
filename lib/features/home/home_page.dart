@@ -1,5 +1,4 @@
 // lib/features/home/home_page.dart
-import 'dart:async';
 import 'dart:io';
 
 import 'package:animations/animations.dart';
@@ -17,6 +16,21 @@ import '../../data/repo/backup_repository.dart';
 import '../../data/repo/notes_repository.dart';
 import '../editor/editor_page.dart';
 
+/// Floating snackbar helper (prevents stacking, avoids FAB)
+void showAppSnack(BuildContext context, String text, {SnackBarAction? action}) {
+  final messenger = ScaffoldMessenger.of(context);
+  messenger.hideCurrentSnackBar();
+  messenger.showSnackBar(
+    SnackBar(
+      content: Text(text),
+      action: action,
+      behavior: SnackBarBehavior.floating,
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 80),
+      duration: const Duration(seconds: 3),
+    ),
+  );
+}
+
 class OpenPaletteIntent extends Intent {
   const OpenPaletteIntent();
 }
@@ -26,9 +40,6 @@ class HomePage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final notesAsync = ref.watch(notesStreamProvider);
-    final repo = ref.watch(notesRepoProvider);
-
     return Shortcuts(
       shortcuts: {
         LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.keyK):
@@ -65,19 +76,14 @@ class HomePage extends ConsumerWidget {
                           XFile(file.path),
                         ], text: 'Notes backup');
                         if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                'Backed up: ${file.path.split('/').last}',
-                              ),
-                            ),
+                          showAppSnack(
+                            context,
+                            'Backed up: ${file.path.split('/').last}',
                           );
                         }
                       } catch (e) {
                         if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Backup failed: $e')),
-                          );
+                          showAppSnack(context, 'Backup failed: $e');
                         }
                       }
                     }
@@ -91,25 +97,22 @@ class HomePage extends ConsumerWidget {
                           final created = await BackupRepository()
                               .importFromFile(File(res.files.single.path!));
                           if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Restored $created note(s)'),
-                              ),
-                            );
+                            showAppSnack(context, 'Imported $created note(s)');
                           }
                         }
                       } catch (e) {
                         if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Restore failed: $e')),
-                          );
+                          showAppSnack(context, 'Import failed: $e');
                         }
                       }
                     }
                   },
                   itemBuilder: (context) => const [
                     PopupMenuItem(value: 'export', child: Text('Backup')),
-                    PopupMenuItem(value: 'import', child: Text('Restore')),
+                    PopupMenuItem(
+                      value: 'import',
+                      child: Text('Restore / Import'),
+                    ),
                   ],
                 ),
               ],
@@ -118,15 +121,16 @@ class HomePage extends ConsumerWidget {
               children: const [
                 Padding(
                   padding: EdgeInsets.fromLTRB(12, 12, 12, 8),
-                  child: _TokenSearchBar(), // ← tokenized search field
+                  child: _TokenSearchBar(), // tokenized search field
                 ),
                 TagStrip(),
                 SizedBox(height: 8),
                 Expanded(child: _NotesList()),
               ],
             ),
+            // 🔁 FAB → create note, then open full-screen EditorPage
             floatingActionButton: FloatingActionButton.extended(
-              onPressed: () => _showQuickAddSheet(context, ref),
+              onPressed: () => _createAndOpenEditor(context, ref),
               icon: const Icon(Icons.add),
               label: const Text('New note'),
             ),
@@ -137,10 +141,8 @@ class HomePage extends ConsumerWidget {
   }
 }
 
-/// Tokenized search input:
-/// - Shows a #tag as a Chip with an ✕ inside the field
-/// - Allows text + tag together
-/// - Debounced updates to providers (queryProvider + activeTagProvider)
+/// Tokenized search box styled like chips (filled + stadium),
+/// promoting a trailing "#tag " into an active tag chip.
 class _TokenSearchBar extends ConsumerStatefulWidget {
   const _TokenSearchBar();
 
@@ -150,118 +152,85 @@ class _TokenSearchBar extends ConsumerStatefulWidget {
 
 class _TokenSearchBarState extends ConsumerState<_TokenSearchBar> {
   final _ctrl = TextEditingController();
-  Timer? _debounce;
 
   @override
   void dispose() {
-    _debounce?.cancel();
     _ctrl.dispose();
     super.dispose();
   }
 
-  void _debouncedPushProviders() {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 250), () {
-      final text = _ctrl.text;
-      // Remove any inline #tags from the typed query (tag is handled by chip)
-      final textSansTags = text
-          .replaceAll(RegExp(r'(?:^|\\s)#[A-Za-z0-9_\\-]+'), '')
-          .trim();
-      ref.read(queryProvider.notifier).state = textSansTags;
-    });
+  void _pushQuery() {
+    ref.read(queryProvider.notifier).state = _ctrl.text;
   }
 
-  // Promote a typed "#tag" at the end of the field into the chip
   void _promoteTrailingHashtagToChip() {
-    final m = RegExp(r'(?:^|\s)#([A-Za-z0-9_\-]+)$').firstMatch(_ctrl.text);
-    if (m != null) {
-      final tag = m.group(1)!;
-      ref.read(activeTagProvider.notifier).state = tag.toLowerCase();
-      // Remove just that trailing token from the text field:
-      final newText = _ctrl.text
-          .replaceAll(RegExp(r'(?:^|\s)#' + RegExp.escape(tag) + r'$'), '')
-          .trimRight();
-      setState(() => _ctrl.text = newText);
-      _debouncedPushProviders();
+    final t = _ctrl.text.trimRight();
+    if (!t.endsWith(' ')) return;
+    final parts = t.split(RegExp(r'\s+'));
+    if (parts.isEmpty) return;
+    final last = parts.last;
+    if (last.startsWith('#') && last.length > 1) {
+      ref.read(activeTagProvider.notifier).state = last
+          .substring(1)
+          .toLowerCase();
+      parts.removeLast();
+      _ctrl.text = parts.join(' ');
+      _ctrl.selection = TextSelection.fromPosition(
+        TextPosition(offset: _ctrl.text.length),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final selectedTag = ref.watch(activeTagProvider);
-    final hasAnyFilter = selectedTag != null || _ctrl.text.trim().isNotEmpty;
+    final hasAny = selectedTag != null || _ctrl.text.trim().isNotEmpty;
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border.all(color: Theme.of(context).dividerColor),
-        borderRadius: BorderRadius.circular(12),
-      ),
+    return Material(
+      color: cs.surfaceVariant.withOpacity(0.55),
+      shape: const StadiumBorder(),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         child: Row(
           children: [
-            // Inline tokens (currently: one #tag chip)
             if (selectedTag != null) ...[
               InputChip(
                 label: Text('#$selectedTag'),
                 onDeleted: () {
                   ref.read(activeTagProvider.notifier).state = null;
-                  _debouncedPushProviders();
-                  setState(() {}); // refresh layout
+                  _pushQuery();
+                  setState(() {});
                 },
                 tooltip: 'Remove #$selectedTag',
                 visualDensity: VisualDensity.compact,
               ),
               const SizedBox(width: 6),
             ],
-
-            // The editable query text
             Expanded(
-              child: EditableText(
+              child: TextField(
                 controller: _ctrl,
-                focusNode: FocusNode(),
-                style: Theme.of(context).textTheme.bodyLarge!,
-                cursorColor: Theme.of(context).colorScheme.primary,
-                backgroundCursorColor: Theme.of(
-                  context,
-                ).colorScheme.surfaceVariant,
-                keyboardType: TextInputType.text,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: InputBorder.none,
+                  hintText: 'Search… type #tag',
+                  contentPadding: EdgeInsets.zero,
+                ),
                 textInputAction: TextInputAction.search,
-                maxLines: 1,
                 onChanged: (_) {
-                  _debouncedPushProviders();
-                  // If user finishes a trailing #tag (space/enter), promote to chip
-                  // Detect space or submitting:
-                  if (_ctrl.text.endsWith(' ')) {
-                    _promoteTrailingHashtagToChip();
-                  }
+                  _pushQuery();
+                  if (_ctrl.text.endsWith(' ')) _promoteTrailingHashtagToChip();
                 },
                 onSubmitted: (_) {
                   _promoteTrailingHashtagToChip();
-                  _debouncedPushProviders();
+                  _pushQuery();
                 },
               ),
             ),
-
-            // Hint / placeholder when empty
-            if (!hasAnyFilter)
-              IgnorePointer(
-                ignoring: true,
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Text(
-                    'Search… type #tag',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
-                  ),
-                ),
-              ),
-
-            // Clear button
-            if (hasAnyFilter)
+            if (hasAny)
               IconButton(
                 tooltip: 'Clear',
+                visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.close),
                 onPressed: () {
                   _ctrl.clear();
@@ -327,218 +296,210 @@ class _NotesList extends ConsumerWidget {
 
     return notesAsync.when(
       data: (notes) {
-        final hasFilters =
-            (ref.watch(queryProvider).trim().isNotEmpty) ||
-            (ref.watch(activeTagProvider) != null);
         if (notes.isEmpty) {
-          return _NoResults(
-            hasFilters: hasFilters,
-            onClear: () {
-              ref.read(queryProvider.notifier).state = '';
-              ref.read(activeTagProvider.notifier).state = null;
-            },
+          return const Center(
+            child: Text('No notes yet. Tap “New” to add one!'),
           );
         }
         return ListView.separated(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 96),
           itemCount: notes.length,
           separatorBuilder: (_, __) => const SizedBox(height: 8),
-          itemBuilder: (_, i) {
+          itemBuilder: (context, i) {
             final n = notes[i];
             return Dismissible(
-              key: ValueKey(n.id),
-              background: _dismissBg(left: true),
-              secondaryBackground: _dismissBg(left: false),
-              // Keep undo-first delete (no confirm dialog)
-              confirmDismiss: (_) async => true,
-              onDismissed: (_) async {
-                final deleted = n;
+              key: ValueKey('note-${n.id}'),
+              background: Container(
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.only(left: 16),
+                color: Colors.red.withOpacity(0.15),
+                child: const Icon(Icons.delete_outline),
+              ),
+              secondaryBackground: Container(
+                alignment: Alignment.centerRight,
+                padding: const EdgeInsets.only(right: 16),
+                color: Colors.red.withOpacity(0.15),
+                child: const Icon(Icons.delete_outline),
+              ),
+              confirmDismiss: (_) async {
                 await repo.delete(n.id);
-                HapticFeedback.mediumImpact();
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: const Text('Note deleted'),
-                      action: SnackBarAction(
-                        label: 'Undo',
-                        onPressed: () async {
-                          await repo.recreate(deleted);
-                        },
-                      ),
+                  showAppSnack(
+                    context,
+                    'Note deleted',
+                    action: SnackBarAction(
+                      label: 'Undo',
+                      onPressed: () async {
+                        await repo.recreate(n);
+                      },
                     ),
                   );
                 }
+                return true;
               },
-              child: OpenContainer(
-                transitionType: ContainerTransitionType.fadeThrough,
-                openElevation: 0,
-                closedElevation: 0,
-                closedShape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                openBuilder: (context, _) =>
-                    EditorPage(idParam: n.id.toString()),
-                closedBuilder: (context, open) => _NoteCard(
-                  note: n,
-                  onOpen: open,
-                  timeAgo: _timeAgo(n.updatedAt),
-                  previewBuilder: (ctx) => _tagHighlightedPreview(ctx, n.body),
-                  onTogglePin: () async {
-                    await repo.update(n, pinned: !n.pinned);
-                    HapticFeedback.selectionClick();
-                  },
-                ),
-              ),
+              child: _NoteCard(note: n),
             );
           },
         );
       },
       loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, st) => Center(child: Text('Error: $e')),
-    );
-  }
-
-  Widget _dismissBg({required bool left}) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.red.withOpacity(.12),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      alignment: left ? Alignment.centerLeft : Alignment.centerRight,
-      padding: EdgeInsets.only(left: left ? 16 : 0, right: left ? 0 : 16),
-      child: const Icon(Icons.delete_outline),
-    );
-  }
-}
-
-class _NoResults extends StatelessWidget {
-  const _NoResults({required this.hasFilters, required this.onClear});
-  final bool hasFilters;
-  final VoidCallback onClear;
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              hasFilters ? Icons.search_off : Icons.note_alt_outlined,
-              size: 48,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              hasFilters
-                  ? 'No notes match your filter'
-                  : 'Create your first note',
-              style: const TextStyle(fontSize: 18),
-            ),
-            const SizedBox(height: 12),
-            if (hasFilters)
-              OutlinedButton.icon(
-                onPressed: onClear,
-                icon: const Icon(Icons.clear),
-                label: const Text('Clear filter'),
-              ),
-          ],
-        ),
-      ),
+      error: (e, _) => Center(child: Text('Error: $e')),
     );
   }
 }
 
 class _NoteCard extends StatelessWidget {
-  const _NoteCard({
-    required this.note,
-    required this.onOpen,
-    required this.onTogglePin,
-    required this.timeAgo,
-    required this.previewBuilder,
-  });
+  const _NoteCard({required this.note});
   final Note note;
-  final VoidCallback onOpen;
-  final VoidCallback onTogglePin;
-  final String timeAgo;
-  final WidgetBuilder previewBuilder;
+
+  String _timeAgo(DateTime dt) {
+    final d = DateTime.now().difference(dt);
+    if (d.inMinutes < 1) return 'just now';
+    if (d.inMinutes < 60) return '${d.inMinutes}m ago';
+    if (d.inHours < 24) return '${d.inHours}h ago';
+    if (d.inDays < 7) return '${d.inDays}d ago';
+    final y = dt.year.toString();
+    final m = dt.month.toString().padLeft(2, '0');
+    final day = dt.day.toString().padLeft(2, '0');
+    return '$y-$m-$day';
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onOpen,
-      borderRadius: BorderRadius.circular(16),
-      child: Ink(
-        decoration: BoxDecoration(
-          color: cs.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: Theme.of(context).dividerColor.withOpacity(0.2),
+
+    List<Widget> _buildTagPills(List<String> tags, {int maxTags = 1}) {
+      if (tags.isEmpty) return [];
+      final pills = <Widget>[];
+      final shown = tags.take(maxTags).toList();
+      for (final t in shown) {
+        pills.add(
+          Container(
+            margin: const EdgeInsets.only(left: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: cs.surfaceVariant.withOpacity(0.7),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '#$t',
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: cs.onSurfaceVariant),
+            ),
           ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+        );
+      }
+      final extra = tags.length - maxTags;
+      if (extra > 0) {
+        pills.add(
+          Container(
+            margin: const EdgeInsets.only(left: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: cs.surfaceVariant.withOpacity(0.7),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '+$extra',
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: cs.onSurfaceVariant),
+            ),
+          ),
+        );
+      }
+      return pills;
+    }
+
+    return OpenContainer(
+      closedElevation: 1,
+      openElevation: 0,
+      closedColor: Theme.of(context).colorScheme.surface,
+      openBuilder: (context, _) => EditorPage(idParam: note.id.toString()),
+      closedBuilder: (context, open) {
+        return InkWell(
+          onTap: open,
+          child: Card(
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          note.title.isEmpty ? 'Untitled' : note.title,
+                  // Row 1: Title left, tags + pin right
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          note.title.isEmpty ? '(Untitled)' : note.title,
                           style: Theme.of(context).textTheme.titleMedium,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Updated $timeAgo',
-                          style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      ..._buildTagPills(note.tags, maxTags: 1),
+                      if (note.pinned) ...[
+                        const SizedBox(width: 6),
+                        Icon(
+                          Icons.push_pin,
+                          size: 16,
+                          color: cs.onSurfaceVariant,
                         ),
                       ],
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+
+                  // Row 2: Description preview
+                  Text(
+                    note.body.isEmpty ? ' ' : note.body,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: cs.onSurfaceVariant,
                     ),
                   ),
-                  IconButton(
-                    tooltip: note.pinned ? 'Unpin' : 'Pin',
-                    icon: Icon(
-                      note.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                  const SizedBox(height: 6),
+
+                  // Row 3: Updated ago
+                  Text(
+                    'Updated ${_timeAgo(note.updatedAt)}',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: cs.onSurfaceVariant,
                     ),
-                    onPressed: onTogglePin,
                   ),
                 ],
               ),
-              const SizedBox(height: 6),
-              Builder(builder: previewBuilder),
-              if (note.tags.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: -8,
-                  children: note.tags
-                      .map(
-                        (t) => Chip(
-                          label: Text('#$t'),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                      )
-                      .toList(),
-                ),
-              ],
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
 
+/// Create a new note in the DB and open full-screen editor.
+Future<void> _createAndOpenEditor(
+  BuildContext context,
+  WidgetRef ref, {
+  String title = '',
+  String body = '',
+}) async {
+  final repo = ref.read(notesRepoProvider);
+  final id = await repo.createAndReturnId(title, body); // must exist in repo
+  if (!context.mounted) return;
+  await Navigator.of(
+    context,
+  ).push(MaterialPageRoute(builder: (_) => EditorPage(idParam: id.toString())));
+}
+
+// (Optional) Quick add sheet kept here for reference; currently unused.
 Future<void> _showQuickAddSheet(BuildContext context, WidgetRef ref) async {
   final repo = ref.read(notesRepoProvider);
   final titleCtrl = TextEditingController();
   final bodyCtrl = TextEditingController();
+
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -556,6 +517,7 @@ Future<void> _showQuickAddSheet(BuildContext context, WidgetRef ref) async {
             TextField(
               controller: titleCtrl,
               decoration: const InputDecoration(hintText: 'Title'),
+              textInputAction: TextInputAction.next,
             ),
             const SizedBox(height: 8),
             TextField(
@@ -564,18 +526,34 @@ Future<void> _showQuickAddSheet(BuildContext context, WidgetRef ref) async {
                 hintText: 'Write here… Use #tags anywhere',
               ),
               maxLines: 6,
+              keyboardType: TextInputType.multiline,
             ),
             const SizedBox(height: 12),
             FilledButton.icon(
               onPressed: () async {
+                final title = titleCtrl.text.trim();
+                final body = bodyCtrl.text.trim();
+
+                if (title.isEmpty && body.isEmpty) {
+                  if (ctx.mounted) {
+                    final m = ScaffoldMessenger.of(ctx);
+                    m.hideCurrentSnackBar();
+                    m.showSnackBar(
+                      const SnackBar(
+                        content: Text('Nothing to save'),
+                        behavior: SnackBarBehavior.floating,
+                        margin: EdgeInsets.fromLTRB(12, 0, 12, 80),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                  return;
+                }
+
                 await repo.create(titleCtrl.text, bodyCtrl.text);
                 HapticFeedback.lightImpact();
                 if (ctx.mounted) Navigator.of(ctx).pop();
-                if (ctx.mounted) {
-                  ScaffoldMessenger.of(
-                    ctx,
-                  ).showSnackBar(const SnackBar(content: Text('Note saved')));
-                }
+                if (ctx.mounted) showAppSnack(ctx, 'Note saved');
               },
               icon: const Icon(Icons.save_outlined),
               label: const Text('Save'),

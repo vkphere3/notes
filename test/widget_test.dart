@@ -1,30 +1,38 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
+// test/widget_test.dart
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:notes_mvp/main.dart';
+import 'package:notes_mvp/features/notes/notes_providers.dart';
+import 'package:notes_mvp/data/repo/notes_repository.dart';
+import 'package:notes_mvp/data/models/note.dart';
+
+/// A lightweight fake that keeps tests hermetic (no Isar, no path_provider).
+class FakeNotesRepository extends NotesRepository {
+  @override
+  Stream<List<Note>> watch({String? query, String? tag}) async* {
+    yield const <Note>[];
+  }
+}
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('App boots to Home and shows "Notes" title', (
+    WidgetTester tester,
+  ) async {
+    // Provide our fake repo so the app doesn’t hit the DB in tests.
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [notesRepoProvider.overrideWithValue(FakeNotesRepository())],
+        child: const NotesApp(),
+      ),
+    );
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    // Let initial frames settle (router build, first stream tick, etc.).
+    await tester.pumpAndSettle(const Duration(milliseconds: 300));
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    // The Home app bar title should be visible.
+    expect(find.text('Notes'), findsOneWidget);
   });
 }

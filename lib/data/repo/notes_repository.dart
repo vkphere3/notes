@@ -3,6 +3,8 @@ import 'package:isar/isar.dart';
 import '../db/isar_service.dart';
 import '../models/note.dart';
 import '../../core/tag_parser.dart';
+import '../../core/tag_parser.dart';
+import '../db/isar_service.dart';
 
 class NotesRepository {
   Future<Note> create(String title, String body) async {
@@ -29,25 +31,27 @@ class NotesRepository {
     return isar.notes.get(id);
   }
 
-  Future<Note> update(
+  Future<void> update(
     Note note, {
-    String? title,
-    String? body,
-    bool? pinned,
+    required String title,
+    required String body,
   }) async {
+    final now = DateTime.now();
+    String finalTitle = title.trim();
+    if (finalTitle.isEmpty) {
+      final words = body.trim().split(RegExp(r'\s+'));
+      finalTitle = words.take(6).join(' ');
+    }
+
     final isar = await IsarService.instance();
-    if (title != null) note.title = title;
-    if (body != null) note.body = body;
-    if (pinned != null) note.pinned = pinned;
-
-    note.tags = {
-      ...extractTags(note.title),
-      ...extractTags(note.body),
-    }.toList();
-    note.updatedAt = DateTime.now();
-
-    await isar.writeTxn(() async => await isar.notes.put(note));
-    return note;
+    await isar.writeTxn(() async {
+      note
+        ..title = finalTitle
+        ..body = body
+        ..tags = extractTags('$finalTitle\n$body')
+        ..updatedAt = now;
+      await isar.notes.put(note);
+    });
   }
 
   int _noteComparator(Note a, Note b) {
@@ -66,6 +70,30 @@ class NotesRepository {
       ..updatedAt = DateTime.now();
     await isar.writeTxn(() async => await isar.notes.put(n));
     return n;
+  }
+
+  // inside class NotesRepository
+  Future<int> createAndReturnId(String title, String body) async {
+    final now = DateTime.now();
+
+    // If no title provided, use first few words of body
+    String finalTitle = title.trim();
+    if (finalTitle.isEmpty) {
+      final words = body.trim().split(RegExp(r'\s+'));
+      finalTitle = words.take(6).join(' '); // first ~6 words
+    }
+
+    final n = Note()
+      ..title = finalTitle
+      ..body = body
+      ..tags = extractTags('$finalTitle\n$body')
+      ..pinned = false
+      ..createdAt = now
+      ..updatedAt = now;
+
+    final isar = await IsarService.instance();
+    final id = await isar.writeTxn(() async => await isar.notes.put(n));
+    return id;
   }
 
   // --- Reactive stream with stage-safe querying + in-memory sort ---

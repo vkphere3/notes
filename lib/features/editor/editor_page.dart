@@ -23,7 +23,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   Note? _loaded;
 
-  // Autosave machinery
+  // Autosave
   Timer? _saveDebounce;
   bool _saving = false;
   bool _dirty = false;
@@ -36,13 +36,12 @@ class _EditorPageState extends ConsumerState<EditorPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    // Mark dirty and (debounced) queue save on edits
     void markDirty() {
       _dirty = true;
       _lastEditAt = DateTime.now();
       _saveDebounce?.cancel();
       _saveDebounce = Timer(const Duration(milliseconds: 1200), _flushSave);
-      setState(() {}); // refresh status chip
+      setState(() {}); // update status pill
     }
 
     _titleCtrl.addListener(markDirty);
@@ -58,7 +57,6 @@ class _EditorPageState extends ConsumerState<EditorPage>
     super.dispose();
   }
 
-  // Save immediately if app is backgrounded
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.inactive ||
@@ -69,6 +67,12 @@ class _EditorPageState extends ConsumerState<EditorPage>
 
   Future<void> _flushSave() async {
     if (!_dirty || _loaded == null) return;
+
+    // If empty, don't write an "empty edit" over an existing note.
+    final title = _titleCtrl.text.trim();
+    final body = _bodyCtrl.text.trim();
+    if (title.isEmpty && body.isEmpty) return;
+
     setState(() => _saving = true);
     final repo = ref.read(notesRepoProvider);
     final n = _loaded!;
@@ -81,37 +85,33 @@ class _EditorPageState extends ConsumerState<EditorPage>
     }
   }
 
-  // If user backs out right after typing, save first (quietly)
   Future<bool> _handleWillPop() async {
     final now = DateTime.now();
     final msSinceEdit = _lastEditAt == null
         ? 9999
         : now.difference(_lastEditAt!).inMilliseconds;
 
-    if (_dirty || msSinceEdit < 500) {
-      // optional tiny hint; not a blocking dialog
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            duration: Duration(milliseconds: 600),
-            content: Text('Saving…'),
-          ),
-        );
-      }
-      await _flushSave();
+    final title = _titleCtrl.text.trim();
+    final body = _bodyCtrl.text.trim();
+
+    // If completely empty, delete the note instead of keeping a blank one.
+    if ((title.isEmpty && body.isEmpty) && _loaded != null) {
+      final repo = ref.read(notesRepoProvider);
+      await repo.delete(_loaded!.id);
+      return true; // pop after delete
     }
-    return true; // allow pop
+
+    if (_dirty || msSinceEdit < 500) {
+      await _flushSave(); // quiet flush
+    }
+    return true;
   }
 
   @override
   Widget build(BuildContext context) {
     final id = _noteId;
     if (id == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Edit note')),
-        body: const Center(child: Text('Invalid note id.')),
-      );
+      return const Scaffold(body: Center(child: Text('Invalid note id.')));
     }
 
     final noteAsync = ref.watch(noteByIdProvider(id));
@@ -120,22 +120,56 @@ class _EditorPageState extends ConsumerState<EditorPage>
       onWillPop: _handleWillPop,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Edit note'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back',
+            onPressed: () async {
+              if (await _handleWillPop()) {
+                if (mounted) Navigator.of(context).pop();
+              }
+            },
+          ),
+          title: Row(
+            children: [
+              const Text('Edit'),
+              const SizedBox(width: 12),
+              _StatusPill(saving: _saving, dirty: _dirty),
+            ],
+          ),
           actions: [
-            // Status pill
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-              child: _StatusPill(saving: _saving, dirty: _dirty),
-            ),
             IconButton(
               tooltip: 'Save now',
               icon: const Icon(Icons.save_outlined),
               onPressed: () async {
+                final title = _titleCtrl.text.trim();
+                final body = _bodyCtrl.text.trim();
+
+                if (title.isEmpty && body.isEmpty) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Nothing to save'),
+                        behavior: SnackBarBehavior.floating,
+                        margin: EdgeInsets.fromLTRB(12, 0, 12, 12),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                  return; // 🚫 don’t save empties
+                }
+
                 await _flushSave();
                 if (mounted) {
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(const SnackBar(content: Text('Saved')));
+                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Saved'),
+                      behavior: SnackBarBehavior.floating,
+                      margin: EdgeInsets.fromLTRB(12, 0, 12, 12),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
                 }
               },
             ),
@@ -143,30 +177,30 @@ class _EditorPageState extends ConsumerState<EditorPage>
               tooltip: 'Delete',
               icon: const Icon(Icons.delete_outline),
               onPressed: () async {
-                final n = _loaded;
-                if (n == null) return;
+                final repo = ref.read(notesRepoProvider);
                 final ok = await showDialog<bool>(
                   context: context,
-                  builder: (_) => AlertDialog(
-                    title: const Text('Delete note?'),
-                    content: const Text('This cannot be undone.'),
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Delete this note?'),
+                    content: const Text('This action cannot be undone.'),
                     actions: [
                       TextButton(
-                        onPressed: () => Navigator.pop(context, false),
+                        onPressed: () => Navigator.of(ctx).pop(false),
                         child: const Text('Cancel'),
                       ),
                       FilledButton(
-                        onPressed: () => Navigator.pop(context, true),
+                        onPressed: () => Navigator.of(ctx).pop(true),
                         child: const Text('Delete'),
                       ),
                     ],
                   ),
                 );
                 if (ok == true) {
-                  final repo = ref.read(notesRepoProvider);
-                  await repo.delete(n.id);
-                  HapticFeedback.mediumImpact();
-                  if (mounted) Navigator.of(context).pop();
+                  final n = _loaded;
+                  if (n != null) {
+                    await repo.delete(n.id);
+                    if (mounted) Navigator.of(context).pop();
+                  }
                 }
               },
             ),
@@ -177,7 +211,7 @@ class _EditorPageState extends ConsumerState<EditorPage>
             if (note == null) {
               return const Center(child: Text('Note not found.'));
             }
-            // Seed controllers once
+            // Seed once
             if (_loaded?.id != note.id) {
               _loaded = note;
               _titleCtrl.text = note.title;
@@ -185,6 +219,8 @@ class _EditorPageState extends ConsumerState<EditorPage>
               _dirty = false;
               _saving = false;
             }
+
+            final cs = Theme.of(context).colorScheme;
 
             return Padding(
               padding: const EdgeInsets.all(16.0),
@@ -200,13 +236,15 @@ class _EditorPageState extends ConsumerState<EditorPage>
                   Expanded(
                     child: TextField(
                       controller: _bodyCtrl,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         hintText: 'Write here… Use #tags anywhere',
-                        border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.all(
-                          12,
-                        ), // makes top alignment obvious
-                        alignLabelWithHint: true,
+                        filled: true,
+                        fillColor: cs.surfaceVariant.withOpacity(0.55),
+                        border: OutlineInputBorder(
+                          borderSide: BorderSide.none,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        contentPadding: const EdgeInsets.all(12),
                       ),
                       maxLines: null,
                       expands: true,
