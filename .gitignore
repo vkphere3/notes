@@ -1,0 +1,91 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub/
+.pub-cache/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Keep generated source files (build_runner, Isar models) under version control:
+# !**/*.g.dart
+
+# Project metadata
+.melos_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+
+# Android
+android/
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/debug/
+android/app/profile/
+android/app/release/
+# Keystores (never commit)
+*.jks
+*.keystore
+
+# iOS
+ios/
+ios/Flutter/App.framework
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Flutter/ephemeral/
+ios/.symlinks/
+ios/Pods/
+ios/Runner.xcworkspace/
+ios/Runner/GeneratedPluginRegistrant.*
+
+# macOS
+macOS/
+macos/Flutter/ephemeral/
+macos/Pods/
+macos/Runner/GeneratedPluginRegistrant.*
+macos/Runner.xcworkspace/
+
+# Windows
+windows/
+windows/flutter/ephemeral/
+windows/runner/Debug/
+windows/runner/Release/
+windows/flutter/generated_plugin_registrant.*
+
+# Linux
+linux/
+linux/flutter/ephemeral/
+linux/**/CMakeFiles/
+linux/**/cmake-build-*
+linux/flutter/generated_plugin_registrant.*
+
+# Web
+web/
+lib/generated_plugin_registrant.dart
+
+# Coverage
+coverage/
+lcov.info
+
+# Build artifacts / binaries
+*.apk
+*.aab
+*.ipa
+*.xcarchive
+
+# Optional (uncomment if you don’t want to commit Firebase configs)
+# android/app/google-services.json
+# ios/Runner/GoogleService-Info.plist
